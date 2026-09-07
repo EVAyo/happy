@@ -368,6 +368,7 @@ export const SessionView = React.memo((props: { id: string }) => {
                 hitSlop={10}
             >
                 <Avatar
+                    bot={!!session.metadata?.bot}
                     id={getSessionAvatarId(session)}
                     size={28}
                     monochrome={!headerProps.isConnected}

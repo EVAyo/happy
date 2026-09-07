@@ -132,11 +132,16 @@ function SessionInfoContent({ session }: { session: Session }) {
     // Use HappyAction for archiving - it handles errors automatically
     const [archivingSession, performArchive] = useHappyAction(async () => {
         // Prompt for worktree cleanup before killing (needs an active machine connection)
-        await maybeCleanupWorktree(session.id, session.metadata?.path, session.metadata?.machineId);
+        if (!session.metadata?.bot) {
+            await maybeCleanupWorktree(session.id, session.metadata?.path, session.metadata?.machineId);
+        }
 
         // Try to kill the CLI process; if it's already dead, force-archive via server
         const killResult = await sessionKill(session.id);
         if (!killResult.success) {
+            if (session.metadata?.bot) {
+                throw new HappyError(killResult.message || 'Connect to the bot’s machine to archive it.', false);
+            }
             await sessionArchive(session.id);
         }
         // Success - navigate back
@@ -150,6 +155,7 @@ function SessionInfoContent({ session }: { session: Session }) {
 
     // Use HappyAction for deletion - kills session first if needed, then deletes
     const [deletingSession, performDelete] = useHappyAction(async () => {
+        if (session.metadata?.bot) throw new HappyError('Archive the bot instead of deleting its conversation.', false);
         // Prompt for worktree cleanup before killing (needs an active machine connection)
         await maybeCleanupWorktree(session.id, session.metadata?.path, session.metadata?.machineId);
 
@@ -269,12 +275,12 @@ function SessionInfoContent({ session }: { session: Session }) {
                         icon={<Ionicons name="archive-outline" size={29} color="#FF3B30" />}
                         onPress={handleArchiveSession}
                     />
-                    <Item
+                    {!session.metadata?.bot && <Item
                         title={t('sessionInfo.deleteSession')}
                         subtitle={t('sessionInfo.deleteSessionSubtitle')}
                         icon={<Ionicons name="trash-outline" size={29} color="#FF3B30" />}
                         onPress={handleDeleteSession}
-                    />
+                    />}
                 </ItemGroup>
 
                 {/* CLI Version Warning */}
