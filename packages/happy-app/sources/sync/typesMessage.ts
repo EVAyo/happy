@@ -2,7 +2,11 @@ import { AgentEvent } from "./typesRaw";
 import { MessageMeta } from "./typesMessageMeta";
 
 export type ToolCall = {
+    /** Provider/session-protocol tool-call id used to join side-channel UI state. */
+    callId?: string;
     name: string;
+    /** Human-readable title supplied by the session protocol. */
+    title?: string;
     state: 'running' | 'completed' | 'error';
     input: any;
     createdAt: number;
@@ -36,6 +40,11 @@ export type UserTextMessage = {
      * older messages and non-Claude agents may not have one.
      */
     claudeUuid?: string;
+    /**
+     * Codex app-server item id corresponding to this user message. Used as
+     * the rewind point when duplicating/forking Codex threads.
+     */
+    codexItemId?: string;
 }
 
 export type ModeSwitchMessage = {

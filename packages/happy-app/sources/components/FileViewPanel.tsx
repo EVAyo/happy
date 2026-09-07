@@ -1,7 +1,7 @@
 /**
  * File view/edit overlay panel.
  * Shown in the main content area when a file is selected from the "All Files" sidebar tab.
- * Uses Pierre for viewing file content, CodeMirror for editing (web only).
+ * Renders file content with the diff renderer's markdown/plain views, CodeMirror for editing (web only).
  */
 import * as React from 'react';
 import { View, ScrollView, ActivityIndicator, Pressable, Platform } from 'react-native';
@@ -9,12 +9,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { Text } from '@/components/StyledText';
 import { Typography } from '@/constants/Typography';
 import { MarkdownView } from '@/components/markdown/MarkdownView';
-import { PierreDiffView } from '@/components/diff/PierreDiffView';
+import { DiffChunk } from '@/components/diff/DiffChunk';
 import { sessionReadFile, sessionWriteFile } from '@/sync/ops';
 import { Modal } from '@/modal';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { t } from '@/text';
 import { layout } from '@/components/layout';
+import { useSession } from '@/sync/storage';
+import { rigCanWriteFiles } from '@/sync/rig';
 
 interface FileViewPanelProps {
     sessionId: string;
@@ -131,6 +133,8 @@ export const FileViewPanel = React.memo(function FileViewPanel({
     onHeaderRightSlotChange,
 }: FileViewPanelProps) {
     const { theme } = useUnistyles();
+    const session = useSession(sessionId);
+    const canWrite = rigCanWriteFiles(session?.metadata);
     const [fileState, setFileState] = React.useState<FileState>({ kind: 'loading' });
     const [editContent, setEditContent] = React.useState('');
     const [isSaving, setIsSaving] = React.useState(false);
@@ -240,7 +244,7 @@ export const FileViewPanel = React.memo(function FileViewPanel({
     }, []);
 
     const handleSave = React.useCallback(async () => {
-        if (fileState.kind !== 'loaded' || !hasChanges) return;
+        if (!canWrite || fileState.kind !== 'loaded' || !hasChanges) return;
         setIsSaving(true);
 
         try {
@@ -279,10 +283,10 @@ export const FileViewPanel = React.memo(function FileViewPanel({
         } finally {
             setIsSaving(false);
         }
-    }, [sessionId, filePath, editContent, fileState, hasChanges]);
+    }, [sessionId, filePath, editContent, fileState, hasChanges, canWrite]);
 
     const handleForceSave = React.useCallback(async () => {
-        if (fileState.kind !== 'loaded') return;
+        if (!canWrite || fileState.kind !== 'loaded') return;
         setIsSaving(true);
 
         try {
@@ -308,7 +312,7 @@ export const FileViewPanel = React.memo(function FileViewPanel({
         } finally {
             setIsSaving(false);
         }
-    }, [sessionId, filePath, editContent, fileState]);
+    }, [sessionId, filePath, editContent, fileState, canWrite]);
 
     // Publish right-slot controls (edit/preview toggle, save button) into the chat header.
     const isLoaded = fileState.kind === 'loaded';
@@ -322,10 +326,11 @@ export const FileViewPanel = React.memo(function FileViewPanel({
                 hasChanges={hasChanges}
                 isSaving={isSaving}
                 onSave={handleSave}
+                canWrite={canWrite}
             />
         );
         return () => onHeaderRightSlotChange(null);
-    }, [isMarkdown, isLoaded, displayMode, hasChanges, isSaving, handleSave, onHeaderRightSlotChange]);
+    }, [isMarkdown, isLoaded, displayMode, hasChanges, isSaving, handleSave, onHeaderRightSlotChange, canWrite]);
 
     return (
         <View style={styles.outer}>
@@ -357,13 +362,13 @@ export const FileViewPanel = React.memo(function FileViewPanel({
                             {t('files.fileConflictDescription')}
                         </Text>
                         <View style={{ flex: 1 }} />
-                        <Pressable
+                        {canWrite && <Pressable
                             onPress={handleForceSave}
                             disabled={isSaving}
                             style={({ pressed }) => [styles.actionButton, { backgroundColor: theme.colors.textDestructive, opacity: isSaving ? 0.6 : pressed ? 0.8 : 1 }]}
                         >
                             <Text style={styles.actionButtonText}>{isSaving ? '...' : t('files.overwrite')}</Text>
-                        </Pressable>
+                        </Pressable>}
                         <Pressable
                             onPress={handleReload}
                             style={({ pressed }) => [styles.actionButton, { backgroundColor: theme.colors.textLink, opacity: pressed ? 0.8 : 1 }]}
@@ -378,11 +383,11 @@ export const FileViewPanel = React.memo(function FileViewPanel({
                         style={{ flex: 1 }}
                         contentContainerStyle={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}
                     >
-                        <PierreDiffView
-                            oldFile={{ name: fileName + ' (your changes)', contents: editContent }}
-                            newFile={{ name: fileName + ' (on device)', contents: externalChange }}
-                            diffStyle="unified"
-                            disableFileHeader={false}
+                        <DiffChunk
+                            fileName={filePath}
+                            oldText={editContent}
+                            newText={externalChange}
+                            collapseAfter={600}
                         />
                     </ScrollView>
                 </View>
@@ -420,6 +425,7 @@ export const FileViewPanel = React.memo(function FileViewPanel({
                         value={editContent}
                         onChange={setEditContent}
                         language={language}
+                        readOnly={!canWrite}
                     />
                 </View>
             )}
@@ -436,6 +442,7 @@ const FileHeaderRight = React.memo(function FileHeaderRight({
     hasChanges,
     isSaving,
     onSave,
+    canWrite,
 }: {
     isMarkdown: boolean;
     isLoaded: boolean;
@@ -444,11 +451,12 @@ const FileHeaderRight = React.memo(function FileHeaderRight({
     hasChanges: boolean;
     isSaving: boolean;
     onSave: () => void;
+    canWrite: boolean;
 }) {
     const { theme } = useUnistyles();
     return (
         <>
-            {isMarkdown && isLoaded && (
+            {canWrite && isMarkdown && isLoaded && (
                 <View style={[styles.toggleRow, { backgroundColor: theme.colors.groupped.background, borderColor: theme.colors.divider }]}>
                     <Pressable
                         onPress={() => onDisplayModeChange('edit')}
@@ -484,7 +492,7 @@ const FileHeaderRight = React.memo(function FileHeaderRight({
                     </Pressable>
                 </View>
             )}
-            {isLoaded && (
+            {canWrite && isLoaded && (
                 <Pressable
                     onPress={onSave}
                     disabled={!hasChanges || isSaving}
@@ -547,10 +555,12 @@ const EditorView = React.memo(function EditorView({
     value,
     onChange,
     language,
+    readOnly,
 }: {
     value: string;
     onChange: (v: string) => void;
     language: string | null;
+    readOnly: boolean;
 }) {
     const { theme } = useUnistyles();
     const [EditorComponent, setEditorComponent] = React.useState<React.ComponentType<any> | null>(null);
@@ -578,6 +588,7 @@ const EditorView = React.memo(function EditorView({
                 onChange={onChange}
                 language={language}
                 darkMode={theme.dark}
+                readOnly={readOnly}
             />
         </View>
     );

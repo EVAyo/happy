@@ -8,13 +8,22 @@ import { CodeView } from '../CodeView';
 import { ToolSectionView } from './ToolSectionView';
 import { useElapsedTime } from '@/hooks/useElapsedTime';
 import { ToolError } from './ToolError';
-import { knownTools } from '@/components/tools/knownTools';
+import { getToolCategoryIcon, knownTools } from '@/components/tools/knownTools';
 import { Metadata } from '@/sync/storageTypes';
 import { useRouter } from 'expo-router';
 import { PermissionFooter } from './PermissionFooter';
 import { parseToolUseError } from '@/utils/toolErrorParser';
-import { formatMCPTitle } from './views/MCPToolView';
 import { t } from '@/text';
+import {
+    formatMCPTitle,
+    getToolActivityLabel,
+    getToolDisplayTitle,
+    getToolSummaryCategory,
+    getTerminalToolCommand,
+    shouldRenderToolCardHeader,
+    shouldUseCompactToolRow,
+} from '@/utils/toolDisplay';
+import { useSetting } from '@/sync/storage';
 
 interface ToolViewProps {
     metadata: Metadata | null;
@@ -29,6 +38,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
     const { tool, onPress, sessionId, messageId } = props;
     const router = useRouter();
     const { theme } = useUnistyles();
+    const compactToolCalls = useSetting('compactToolCalls');
 
     // For file-editing tools, navigate to file route instead of message detail
     const fileEditTools = ['Edit', 'MultiEdit', 'Write'];
@@ -59,7 +69,8 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
     let description: string | null = null;
     let status: string | null = null;
     let minimal = false;
-    let icon = <Ionicons name="construct-outline" size={18} color={theme.colors.textSecondary} />;
+    let icon = getToolCategoryIcon(getToolSummaryCategory(tool.name), 18, theme.colors.text)
+        ?? <Ionicons name="construct-outline" size={18} color={theme.colors.textSecondary} />;
     let noStatus = false;
     let hideDefaultError = false;
     
@@ -80,7 +91,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
     }
 
     // Handle optional title and function type
-    let toolTitle = tool.name;
+    let toolTitle = getToolDisplayTitle(tool);
     
     // Special handling for MCP tools
     if (tool.name.startsWith('mcp__')) {
@@ -163,67 +174,98 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
         }
     }
 
-    return (
-        <View style={styles.container}>
-            {isPressable ? (
-                <TouchableOpacity style={styles.header} onPress={handlePress} activeOpacity={0.8}>
-                    <View style={styles.headerLeft}>
-                        <View style={styles.iconContainer}>
-                            {icon}
-                        </View>
-                        <View style={styles.titleContainer}>
-                            <Text style={styles.toolName} numberOfLines={1}>{toolTitle}{status ? <Text style={styles.status}>{` ${status}`}</Text> : null}</Text>
-                            {description && (
-                                <Text style={styles.toolDescription} numberOfLines={1}>
-                                    {description}
-                                </Text>
-                            )}
-                        </View>
-                        {tool.state === 'running' && (
-                            <View style={styles.elapsedContainer}>
-                                <ElapsedView from={tool.createdAt} />
-                            </View>
-                        )}
-                        {statusIcon}
+    const terminalCommand = getTerminalToolCommand(tool);
+    const isCompactTerminalTool = terminalCommand !== null;
+    const SpecificToolView = getToolViewComponent(tool.name);
+    const needsApprovalInput = tool.permission?.status === 'pending' && SpecificToolView === null;
+    const isCompactActivityTool = !needsApprovalInput && (shouldUseCompactToolRow(tool, compactToolCalls, SpecificToolView !== null)
+        || minimal
+        || isCompactTerminalTool);
+    const activityLabel = getToolActivityLabel(tool);
+    const isInlineCodexPatch = Platform.OS === 'web' && (tool.name === 'CodexPatch' || tool.name === 'apply_patch');
+    const renderCardHeader = isCompactActivityTool || shouldRenderToolCardHeader(tool.name, Platform.OS);
+    const renderPermissionFooter = () => (
+        tool.permission && sessionId && tool.name !== 'AskUserQuestion'
+            ? <PermissionFooter permission={tool.permission} sessionId={sessionId} toolName={tool.name} toolInput={tool.input} metadata={props.metadata} />
+            : null
+    );
+
+    const renderHeaderContent = () => {
+        if (isCompactActivityTool) {
+            return (
+                <View style={styles.compactHeaderLeft}>
+                    <View style={styles.compactIconContainer}>
+                        {icon}
                     </View>
-                </TouchableOpacity>
-            ) : (
-                <View style={styles.header}>
-                    <View style={styles.headerLeft}>
-                        <View style={styles.iconContainer}>
-                            {icon}
+                    <Text style={styles.compactActivityText} numberOfLines={1}>
+                        {activityLabel}
+                    </Text>
+                    {tool.state === 'running' && (
+                        <View style={styles.elapsedContainer}>
+                            <ElapsedView from={tool.createdAt} />
                         </View>
-                        <View style={styles.titleContainer}>
-                            <Text style={styles.toolName} numberOfLines={1}>{toolTitle}{status ? <Text style={styles.status}>{` ${status}`}</Text> : null}</Text>
-                            {description && (
-                                <Text style={styles.toolDescription} numberOfLines={1}>
-                                    {description}
-                                </Text>
-                            )}
-                        </View>
-                        {tool.state === 'running' && (
-                            <View style={styles.elapsedContainer}>
-                                <ElapsedView from={tool.createdAt} />
-                            </View>
-                        )}
-                        {statusIcon}
-                    </View>
+                    )}
+                    {statusIcon}
                 </View>
-            )}
+            );
+        }
+
+        return (
+            <View style={styles.headerLeft}>
+                <View style={styles.iconContainer}>
+                    {icon}
+                </View>
+                <View style={styles.titleContainer}>
+                    <Text style={styles.toolName} numberOfLines={1}>{toolTitle}{status ? <Text style={styles.status}>{` ${status}`}</Text> : null}</Text>
+                    {description && (
+                        <Text style={styles.toolDescription} numberOfLines={1}>
+                            {description}
+                        </Text>
+                    )}
+                </View>
+                {tool.state === 'running' && (
+                    <View style={styles.elapsedContainer}>
+                        <ElapsedView from={tool.createdAt} />
+                    </View>
+                )}
+                {statusIcon}
+            </View>
+        );
+    };
+
+    return (
+        <View style={isCompactActivityTool ? styles.compactContainer : isInlineCodexPatch ? styles.inlineContainer : styles.container}>
+            {renderCardHeader ? (
+                isPressable ? (
+                    <TouchableOpacity style={isCompactActivityTool ? styles.compactHeader : styles.header} onPress={handlePress} activeOpacity={0.8}>
+                        {renderHeaderContent()}
+                    </TouchableOpacity>
+                ) : (
+                    <View style={isCompactActivityTool ? styles.compactHeader : styles.header}>
+                        {renderHeaderContent()}
+                    </View>
+                )
+            ) : null}
 
             {/* Content area - either custom children or tool-specific view */}
             {(() => {
                 // Check if minimal first - minimal tools don't show content
-                if (minimal) {
+                if (isCompactActivityTool) {
                     return null;
                 }
 
                 // Try to use a specific tool view component first
-                const SpecificToolView = getToolViewComponent(tool.name);
                 if (SpecificToolView) {
                     return (
                         <View style={styles.content}>
-                            <SpecificToolView tool={tool} metadata={props.metadata} messages={props.messages ?? []} sessionId={sessionId} />
+                            <SpecificToolView
+                                tool={tool}
+                                metadata={props.metadata}
+                                messages={props.messages ?? []}
+                                sessionId={sessionId}
+                                messageId={messageId}
+                                permissionFooter={isInlineCodexPatch ? renderPermissionFooter() : undefined}
+                            />
                             {tool.state === 'error' && tool.result &&
                                 !(tool.permission && (tool.permission.status === 'denied' || tool.permission.status === 'canceled')) &&
                                 !hideDefaultError && (
@@ -267,9 +309,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
 
             {/* Permission footer - always renders when permission exists to maintain consistent height */}
             {/* AskUserQuestion has its own Submit button UI - no permission footer needed */}
-            {tool.permission && sessionId && tool.name !== 'AskUserQuestion' && (
-                <PermissionFooter permission={tool.permission} sessionId={sessionId} toolName={tool.name} toolInput={tool.input} metadata={props.metadata} />
-            )}
+            {!isInlineCodexPatch ? renderPermissionFooter() : null}
         </View>
     );
 });
@@ -284,8 +324,18 @@ const styles = StyleSheet.create((theme) => ({
     container: {
         backgroundColor: theme.colors.surfaceHigh,
         borderRadius: 8,
-        marginVertical: 4,
+        marginVertical: 8,
         overflow: 'hidden'
+    },
+    compactContainer: {
+        backgroundColor: 'transparent',
+        marginVertical: 2,
+        overflow: 'visible',
+    },
+    inlineContainer: {
+        backgroundColor: 'transparent',
+        marginVertical: 1,
+        overflow: 'visible',
     },
     header: {
         flexDirection: 'row',
@@ -293,6 +343,15 @@ const styles = StyleSheet.create((theme) => ({
         justifyContent: 'space-between',
         padding: 12,
         backgroundColor: theme.colors.surfaceHighest,
+    },
+    compactHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        minHeight: 28,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 4,
+        backgroundColor: 'transparent',
     },
     headerLeft: {
         flexDirection: 'row',
@@ -303,6 +362,19 @@ const styles = StyleSheet.create((theme) => ({
     iconContainer: {
         width: 24,
         height: 24,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    compactHeaderLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        flex: 1,
+        minWidth: 0,
+    },
+    compactIconContainer: {
+        width: 20,
+        height: 20,
         alignItems: 'center',
         justifyContent: 'center',
     },
@@ -321,6 +393,13 @@ const styles = StyleSheet.create((theme) => ({
         fontSize: 14,
         fontWeight: '500',
         color: theme.colors.text,
+    },
+    compactActivityText: {
+        flex: 1,
+        minWidth: 0,
+        fontSize: 15,
+        lineHeight: 20,
+        color: theme.colors.textSecondary,
     },
     status: {
         fontWeight: '400',

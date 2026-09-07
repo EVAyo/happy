@@ -22,6 +22,12 @@ import {
     ForkTruncateUuidNotFoundError,
     ForkSourceMissingError,
 } from '@/claude/utils/claudeSessionFork';
+import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import {
+    CodexForkRewindPointNotFoundError,
+    forkCodexThread,
+    listCodexRewindPoints,
+} from '@/codex/codexThreadFork';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -89,6 +95,23 @@ type MachineRpcHandlers = {
     requestShutdown: () => void;
 }
 
+function requireNonEmptyString(value: unknown, name: string): string {
+    if (typeof value !== 'string' || value.length === 0) {
+        throw new Error(`${name} is required`);
+    }
+    return value;
+}
+
+async function withCodexAppServerClient<T>(handler: (client: CodexAppServerClient) => Promise<T>): Promise<T> {
+    const client = new CodexAppServerClient();
+    await client.connect();
+    try {
+        return await handler(client);
+    } finally {
+        await client.disconnect();
+    }
+}
+
 export class ApiMachineClient {
     private socket!: Socket<ServerToDaemonEvents, DaemonToServerEvents>;
     private keepAliveInterval: NodeJS.Timeout | null = null;
@@ -110,7 +133,9 @@ export class ApiMachineClient {
             logger: (msg, data) => logger.debug(msg, data)
         });
 
-        registerCommonHandlers(this.rpcHandlerManager, process.cwd());
+        // null = unrestricted: the daemon serves the whole machine, and its
+        // process.cwd() is an accident of where it was started, not a workspace.
+        registerCommonHandlers(this.rpcHandlerManager, null);
     }
 
     setRPCHandlers({
@@ -123,14 +148,14 @@ export class ApiMachineClient {
 
         // Register spawn session handler
         this.rpcHandlerManager.registerHandler('spawn-happy-session', async (params: any) => {
-            const { directory, sessionId, machineId, approvedNewDirectoryCreation, agent, environmentVariables, token, resumeClaudeSessionId, parentSessionId, forkedFromMessageId } = params || {};
+            const { directory, sessionId, machineId, approvedNewDirectoryCreation, agent, permissionMode, modelMode, effortLevel, environmentVariables, token, resumeClaudeSessionId, resumeCodexThreadId, parentSessionId, forkedFromMessageId, isSideChat } = params || {};
             logger.debug(`[API MACHINE] Spawning session with params: ${JSON.stringify(params)}`);
 
             if (!directory) {
                 throw new Error('Directory is required');
             }
 
-            const result = await spawnSession({ directory, sessionId, machineId, approvedNewDirectoryCreation, agent, environmentVariables, token, resumeClaudeSessionId, parentSessionId, forkedFromMessageId });
+            const result = await spawnSession({ directory, sessionId, machineId, approvedNewDirectoryCreation, agent, permissionMode, modelMode, effortLevel, environmentVariables, token, resumeClaudeSessionId, resumeCodexThreadId, parentSessionId, forkedFromMessageId, isSideChat });
 
             switch (result.type) {
                 case 'success':
@@ -239,6 +264,53 @@ export class ApiMachineClient {
                 if (error instanceof ForkTruncateUuidNotFoundError) {
                     throw new Error(
                         'The chosen rewind point is no longer present in the source session — try forking without truncation',
+                    );
+                }
+                throw error;
+            }
+        });
+
+        this.rpcHandlerManager.registerHandler('codex-fork-thread', async (params: any) => {
+            const directory = requireNonEmptyString(params?.directory, 'directory');
+            const codexThreadId = requireNonEmptyString(params?.codexThreadId, 'codexThreadId');
+
+            const result = await withCodexAppServerClient((client) => forkCodexThread(client, {
+                threadId: codexThreadId,
+                cwd: directory,
+            }));
+            return result;
+        });
+
+        this.rpcHandlerManager.registerHandler('codex-list-rewind-points', async (params: any) => {
+            const codexThreadId = requireNonEmptyString(params?.codexThreadId, 'codexThreadId');
+
+            return withCodexAppServerClient(async (client) => {
+                const { thread } = await client.readThread({
+                    threadId: codexThreadId,
+                    includeTurns: true,
+                });
+                return {
+                    type: 'success',
+                    points: listCodexRewindPoints(thread),
+                };
+            });
+        });
+
+        this.rpcHandlerManager.registerHandler('codex-duplicate-thread', async (params: any) => {
+            const directory = requireNonEmptyString(params?.directory, 'directory');
+            const codexThreadId = requireNonEmptyString(params?.codexThreadId, 'codexThreadId');
+            const cutAfterItemId = requireNonEmptyString(params?.cutAfterItemId, 'cutAfterItemId');
+
+            try {
+                return await withCodexAppServerClient((client) => forkCodexThread(client, {
+                    threadId: codexThreadId,
+                    cwd: directory,
+                    cutAfterItemId,
+                }));
+            } catch (error) {
+                if (error instanceof CodexForkRewindPointNotFoundError) {
+                    throw new Error(
+                        'The chosen rewind point is no longer present in the source Codex thread — try forking without truncation',
                     );
                 }
                 throw error;
@@ -427,6 +499,7 @@ export class ApiMachineClient {
 
         this.socket.on('connect_error', (error) => {
             logger.debug(`[API MACHINE] Connection error: ${error.message}`);
+            this.startSmartReconnect();
         });
 
         this.socket.io.on('error', (error: any) => {
@@ -434,39 +507,61 @@ export class ApiMachineClient {
         });
     }
 
+    private sendKeepAlive() {
+        const payload = {
+            machineId: this.machine.id,
+            time: Date.now()
+        };
+        if (process.env.DEBUG) {
+            logger.debugLargeJson(`[API MACHINE] Emitting machine-alive`, payload);
+        }
+        this.socket.emit('machine-alive', payload);
+
+        // Re-detect CLI availability and push metadata update if changed
+        const newAvailability = detectCLIAvailability();
+        const prev = this.lastKnownCLIAvailability;
+        const newResumeSupport = detectResumeSupport();
+        const prevResume = this.lastKnownResumeSupport;
+        // Every detected CLI has to be compared here. A key left out is never
+        // republished after startup, so installing or removing that agent goes
+        // unnoticed for the life of the daemon — and the app hides agents it is
+        // not told about.
+        const cliAvailabilityChanged = !prev
+            || prev.claude !== newAvailability.claude
+            || prev.codex !== newAvailability.codex
+            || prev.gemini !== newAvailability.gemini
+            || prev.openclaw !== newAvailability.openclaw
+            || prev.agy !== newAvailability.agy;
+        const resumeSupportChanged = !prevResume
+            || prevResume.rpcAvailable !== newResumeSupport.rpcAvailable
+            || prevResume.happyAgentAuthenticated !== newResumeSupport.happyAgentAuthenticated;
+        // POST /v1/machines returns the stored encrypted metadata when the
+        // machine already exists. After a CLI upgrade that can leave the app
+        // looking at the version from the machine's first registration even
+        // though this daemon is newer. Repair it through the normal versioned
+        // metadata update so fields owned by the app (for example displayName)
+        // are preserved.
+        const cliVersionChanged = this.machine.metadata?.happyCliVersion !== configuration.currentCliVersion;
+
+        if (cliAvailabilityChanged || resumeSupportChanged || cliVersionChanged) {
+            this.lastKnownCLIAvailability = newAvailability;
+            this.lastKnownResumeSupport = newResumeSupport;
+            this.updateMachineMetadata((metadata) => ({
+                ...(metadata || {} as any),
+                happyCliVersion: configuration.currentCliVersion,
+                cliAvailability: newAvailability,
+                resumeSupport: { ...newResumeSupport, rpcAvailable: !!this.resumeSessionHandler },
+            })).catch((err) => {
+                logger.debug('[API MACHINE] Failed to update machine capabilities:', err);
+            });
+        }
+    }
+
     private startKeepAlive() {
         this.stopKeepAlive();
+        this.sendKeepAlive();
         this.keepAliveInterval = setInterval(() => {
-            const payload = {
-                machineId: this.machine.id,
-                time: Date.now()
-            };
-            if (process.env.DEBUG) {
-                logger.debugLargeJson(`[API MACHINE] Emitting machine-alive`, payload);
-            }
-            this.socket.emit('machine-alive', payload);
-
-            // Re-detect CLI availability and push metadata update if changed
-            const newAvailability = detectCLIAvailability();
-            const prev = this.lastKnownCLIAvailability;
-            const newResumeSupport = detectResumeSupport();
-            const prevResume = this.lastKnownResumeSupport;
-            const cliAvailabilityChanged = !prev || prev.claude !== newAvailability.claude || prev.codex !== newAvailability.codex || prev.gemini !== newAvailability.gemini || prev.openclaw !== newAvailability.openclaw;
-            const resumeSupportChanged = !prevResume
-                || prevResume.rpcAvailable !== newResumeSupport.rpcAvailable
-                || prevResume.happyAgentAuthenticated !== newResumeSupport.happyAgentAuthenticated;
-
-            if (cliAvailabilityChanged || resumeSupportChanged) {
-                this.lastKnownCLIAvailability = newAvailability;
-                this.lastKnownResumeSupport = newResumeSupport;
-                this.updateMachineMetadata((metadata) => ({
-                    ...(metadata || {} as any),
-                    cliAvailability: newAvailability,
-                    resumeSupport: { ...newResumeSupport, rpcAvailable: !!this.resumeSessionHandler },
-                })).catch((err) => {
-                    logger.debug('[API MACHINE] Failed to update machine capabilities:', err);
-                });
-            }
+            this.sendKeepAlive();
         }, 20000);
         logger.debug('[API MACHINE] Keep-alive started (20s interval)');
     }

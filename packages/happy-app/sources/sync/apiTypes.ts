@@ -3,7 +3,7 @@ import {
     ApiMessageSchema,
     ApiUpdateMachineStateSchema,
     ApiUpdateNewMessageSchema,
-    ApiUpdateSessionStateSchema,
+    ApiUpdateSessionStateSchema as SharedApiUpdateSessionStateSchema,
     type ApiMessage,
 } from '@slopus/happy-wire';
 import { GitHubProfileSchema, ImageRefSchema } from './profile';
@@ -14,7 +14,6 @@ export {
     ApiMessageSchema,
     ApiUpdateMachineStateSchema,
     ApiUpdateNewMessageSchema,
-    ApiUpdateSessionStateSchema,
 };
 export type { ApiMessage };
 
@@ -25,8 +24,15 @@ export type { ApiMessage };
 export const ApiUpdateNewSessionSchema = z.object({
     t: z.literal('new-session'),
     id: z.string(), // Session ID
+    projectId: z.string().nullable().optional(),
     createdAt: z.number(),
     updatedAt: z.number(),
+});
+
+// The shared wire schema predates the account-scoped project link. Extend it
+// here so Zod does not strip projectId before Sync can apply it.
+export const ApiUpdateSessionStateSchema = SharedApiUpdateSessionStateSchema.extend({
+    projectId: z.string().nullable().optional(),
 });
 
 export const ApiDeleteSessionSchema = z.object({
@@ -37,6 +43,43 @@ export const ApiDeleteSessionSchema = z.object({
 export const ApiDeleteMachineSchema = z.object({
     t: z.literal('delete-machine'),
     machineId: z.string(),
+});
+
+export const ApiNewProjectSchema = z.object({
+    t: z.literal('new-project'),
+    projectId: z.string(),
+});
+
+export const ApiUpdateProjectSchema = z.object({
+    t: z.literal('update-project'),
+    projectId: z.string(),
+});
+
+export const ApiDeleteProjectSchema = z.object({
+    t: z.literal('delete-project'),
+    projectId: z.string(),
+});
+
+// Machine creation. Carries the per-machine data encryption key so an
+// already-connected app can register encryption and decrypt this machine's
+// metadata/daemonState without waiting for a full /v1/machines refetch.
+// Mirrors the server's buildNewMachineUpdate(). The companion 'update-machine'
+// emit on creation is machine-scoped-only and never reaches the user's app, so
+// 'new-machine' is the only machine-creation signal the app receives — it must
+// be handled or freshly onboarded machines stay invisible until app restart.
+export const ApiUpdateNewMachineSchema = z.object({
+    t: z.literal('new-machine'),
+    machineId: z.string(),
+    seq: z.number(),
+    metadata: z.string(),
+    metadataVersion: z.number(),
+    daemonState: z.string().nullish(),
+    daemonStateVersion: z.number(),
+    dataEncryptionKey: z.string().nullish(),
+    active: z.boolean(),
+    activeAt: z.number(),
+    createdAt: z.number(),
+    updatedAt: z.number(),
 });
 
 export const ApiUpdateAccountSchema = z.object({
@@ -125,7 +168,11 @@ export const ApiUpdateSchema = z.union([
     ApiUpdateSessionStateSchema,
     ApiUpdateAccountSchema,
     ApiUpdateMachineStateSchema,
+    ApiUpdateNewMachineSchema,
     ApiDeleteMachineSchema,
+    ApiNewProjectSchema,
+    ApiUpdateProjectSchema,
+    ApiDeleteProjectSchema,
     ApiNewArtifactSchema,
     ApiUpdateArtifactSchema,
     ApiDeleteArtifactSchema,

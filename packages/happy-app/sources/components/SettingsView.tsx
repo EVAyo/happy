@@ -1,4 +1,4 @@
-import { View, ScrollView, Pressable, Platform } from 'react-native';
+import { NativeScrollEvent, NativeSyntheticEvent, View, ScrollView, Pressable, Platform } from 'react-native';
 import { openExternalUrl } from '@/utils/openExternalUrl';
 import { Image } from 'expo-image';
 import * as React from 'react';
@@ -18,8 +18,6 @@ import { isUsingCustomServer } from '@/sync/serverConfig';
 import { trackPaywallButtonClicked, trackWhatsNewClicked } from '@/track';
 import { Modal } from '@/modal';
 import { useMultiClick } from '@/hooks/useMultiClick';
-import { useAllMachines } from '@/sync/storage';
-import { isMachineOnline } from '@/utils/machineUtils';
 import { useUnistyles } from 'react-native-unistyles';
 import { layout } from '@/components/layout';
 import { useHappyAction } from '@/hooks/useHappyAction';
@@ -30,27 +28,72 @@ import { getDisplayName, getAvatarUrl, getBio } from '@/sync/profile';
 import { Avatar } from '@/components/Avatar';
 import { t } from '@/text';
 
-export const SettingsView = React.memo(function SettingsView() {
+type BuildConfig = {
+    buildCommitSha?: unknown;
+    buildCommitTimestamp?: unknown;
+};
+
+function getBuildConfig(): BuildConfig {
+    const appConfig = Constants.expoConfig?.extra?.app;
+    return appConfig && typeof appConfig === 'object' ? appConfig as BuildConfig : {};
+}
+
+function formatUtcTimestamp(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    return date.toISOString()
+        .replace(/\.\d{3}Z$/, 'Z')
+        .replace(/:\d{2}Z$/, 'Z')
+        .replace('T', ' ')
+        .replace('Z', ' UTC');
+}
+
+function formatBuildSubtitle(buildConfig: BuildConfig): string | undefined {
+    const commitTimestamp = typeof buildConfig.buildCommitTimestamp === 'string'
+        ? formatUtcTimestamp(buildConfig.buildCommitTimestamp)
+        : undefined;
+    const commitSha = typeof buildConfig.buildCommitSha === 'string'
+        ? buildConfig.buildCommitSha.slice(0, 7)
+        : undefined;
+
+    if (!commitTimestamp && !commitSha) {
+        return undefined;
+    }
+
+    return [
+        commitTimestamp ? `Commit ${commitTimestamp}` : 'Commit',
+        commitSha,
+    ].filter(Boolean).join(' / ');
+}
+
+export const SettingsView = React.memo(function SettingsView({
+    topContentInset = 0,
+    bottomContentInset = 0,
+    onScroll,
+}: {
+    topContentInset?: number;
+    bottomContentInset?: number;
+    onScroll?: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
+}) {
     const { theme } = useUnistyles();
     const router = useRouter();
     const appVersion = Constants.expoConfig?.version || '1.0.0';
+    const runtimeVersion = typeof Constants.expoConfig?.runtimeVersion === 'string'
+        ? Constants.expoConfig.runtimeVersion
+        : undefined;
+    const versionDetail = [
+        appVersion,
+        runtimeVersion ? `runtime ${runtimeVersion}` : undefined,
+    ].filter(Boolean).join(' / ');
+    const versionSubtitle = formatBuildSubtitle(getBuildConfig());
     const auth = useAuth();
     const [devModeEnabled, setDevModeEnabled] = useLocalSettingMutable('devModeEnabled');
     const isPro = __DEV__ || useEntitlement('pro');
     const experiments = useSetting('experiments');
     const isCustomServer = isUsingCustomServer();
-    const [showOfflineMachines, setShowOfflineMachines] = React.useState(false);
-    const allMachinesWithOffline = useAllMachines({ includeOffline: true });
-    const offlineMachineCount = React.useMemo(
-        () => allMachinesWithOffline.filter(m => !isMachineOnline(m)).length,
-        [allMachinesWithOffline]
-    );
-    const visibleMachines = React.useMemo(
-        () => showOfflineMachines
-            ? allMachinesWithOffline
-            : allMachinesWithOffline.filter(isMachineOnline),
-        [allMachinesWithOffline, showOfflineMachines]
-    );
     const profile = useProfile();
     const displayName = getDisplayName(profile);
     const avatarUrl = getAvatarUrl(profile);
@@ -133,10 +176,25 @@ export const SettingsView = React.memo(function SettingsView() {
 
     return (
 
-        <ItemList style={{ paddingTop: 0 }}>
+        <ItemList
+            style={{ paddingTop: 0 }}
+            containerStyle={{ paddingTop: topContentInset, paddingBottom: bottomContentInset }}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+        >
             {/* App Info Header */}
             <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
-                <View style={{ alignItems: 'center', paddingVertical: 24, backgroundColor: theme.colors.surface, marginTop: 16, borderRadius: 12, marginHorizontal: 16 }}>
+                <View
+                    style={{
+                    alignItems: 'center',
+                    paddingVertical: 24,
+                    backgroundColor: theme.colors.surface,
+                    marginTop: 16,
+                    borderRadius: Platform.select({ web: 12, default: 16 }),
+                    marginHorizontal: 16,
+                    borderWidth: Platform.OS === 'web' ? 0 : 0.5,
+                    borderColor: theme.colors.divider,
+                }}>
                     {profile.firstName ? (
                         // Profile view: Avatar + name + version
                         <>
@@ -259,60 +317,6 @@ export const SettingsView = React.memo(function SettingsView() {
                 />
             </ItemGroup> */}
 
-            {/* Machines (sorted: online first, then last seen desc) */}
-            {allMachinesWithOffline.length > 0 && (
-                <ItemGroup title={t('settings.machines')}>
-                    {visibleMachines.map((machine) => {
-                        const isOnline = isMachineOnline(machine);
-                        const host = machine.metadata?.host || 'Unknown';
-                        const displayName = machine.metadata?.displayName;
-                        const platform = machine.metadata?.platform || '';
-
-                        // Use displayName if available, otherwise use host
-                        const title = displayName || host;
-
-                        // Build subtitle: show hostname if different from title, plus platform and status
-                        let subtitle = '';
-                        if (displayName && displayName !== host) {
-                            subtitle = host;
-                        }
-                        if (platform) {
-                            subtitle = subtitle ? `${subtitle} • ${platform}` : platform;
-                        }
-                        subtitle = subtitle ? `${subtitle} • ${isOnline ? t('status.online') : t('status.offline')}` : (isOnline ? t('status.online') : t('status.offline'));
-
-                        return (
-                            <Item
-                                key={machine.id}
-                                title={title}
-                                subtitle={subtitle}
-                                icon={
-                                    <Ionicons
-                                        name="desktop-outline"
-                                        size={29}
-                                        color={isOnline ? theme.colors.status.connected : theme.colors.status.disconnected}
-                                    />
-                                }
-                                onPress={() => router.push(`/machine/${machine.id}`)}
-                            />
-                        );
-                    })}
-                    {offlineMachineCount > 0 && (
-                        <Item
-                            title={showOfflineMachines
-                                ? t('settings.hideOfflineMachines')
-                                : t('settings.showOfflineMachines', { count: offlineMachineCount })}
-                            onPress={() => setShowOfflineMachines(v => !v)}
-                            showChevron={false}
-                            titleStyle={{
-                                textAlign: 'center',
-                                color: theme.colors.textLink,
-                            }}
-                        />
-                    )}
-                </ItemGroup>
-            )}
-
             {/* Features */}
             <ItemGroup title={t('settings.features')}>
                 <Item
@@ -334,10 +338,10 @@ export const SettingsView = React.memo(function SettingsView() {
                     onPress={() => router.push('/settings/voice')}
                 />
                 <Item
-                    title={t('settings.featuresTitle')}
-                    subtitle={t('settings.featuresSubtitle')}
-                    icon={<Ionicons name="flask-outline" size={29} color="#FF9500" />}
-                    onPress={() => router.push('/settings/features')}
+                    title="Agents"
+                    subtitle="Connected machines and agent defaults"
+                    icon={<Ionicons name="options-outline" size={29} color="#5AC8FA" />}
+                    onPress={() => router.push('/settings/agents' as any)}
                 />
                 {experiments && (
                     <Item
@@ -401,7 +405,9 @@ export const SettingsView = React.memo(function SettingsView() {
                 )}
                 <Item
                     title={t('common.version')}
-                    detail={appVersion}
+                    subtitle={versionSubtitle}
+                    subtitleLines={2}
+                    detail={versionDetail}
                     icon={<Ionicons name="information-circle-outline" size={29} color={theme.colors.textSecondary} />}
                     onPress={handleVersionClick}
                     showChevron={false}

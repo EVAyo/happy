@@ -1,3 +1,5 @@
+const { execFileSync } = require('node:child_process');
+
 const variant = process.env.APP_ENV || 'development';
 const name = {
     development: "Happy (dev)",
@@ -21,6 +23,37 @@ const consoleLoggingDefault = {
     preview: true,
     production: false,
 }[variant];
+
+function git(args) {
+    try {
+        return execFileSync('git', args, {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim() || undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function loadBuildMetadata() {
+    const commitSha =
+        process.env.HAPPY_BUILD_COMMIT_SHA ||
+        process.env.EAS_BUILD_GIT_COMMIT_HASH ||
+        process.env.GITHUB_SHA ||
+        git(['rev-parse', 'HEAD']);
+    const commitTimestamp =
+        process.env.HAPPY_BUILD_COMMIT_TIMESTAMP ||
+        (commitSha
+            ? git(['show', '-s', '--format=%cI', commitSha])
+            : git(['show', '-s', '--format=%cI', 'HEAD']));
+
+    return {
+        commitSha,
+        commitTimestamp,
+    };
+}
+
+const buildMetadata = loadBuildMetadata();
 
 export default {
     expo: {
@@ -54,13 +87,15 @@ export default {
                     ? { NSAllowsLocalNetworking: true }
                     : { NSAllowsLocalNetworking: true, NSAllowsArbitraryLoads: true }
             },
-            associatedDomains: variant === 'production' ? ["applinks:app.happy.engineering"] : []
+            ...(variant === 'production'
+                ? { associatedDomains: ["applinks:app.happy.engineering"] }
+                : {})
         },
         android: {
             adaptiveIcon: {
                 foregroundImage: "./sources/assets/images/icon-adaptive.png",
                 monochromeImage: "./sources/assets/images/icon-monochrome.png",
-                backgroundColor: "#18171C"
+                backgroundColor: "#000000"
             },
             permissions: [
                 "android.permission.RECORD_AUDIO",
@@ -158,7 +193,7 @@ export default {
                     ios: {
                         backgroundColor: "#F2F2F7",
                         dark: {
-                            backgroundColor: "#1C1C1E",
+                            backgroundColor: "#000000",
                         }
                     },
                     android: {
@@ -166,7 +201,7 @@ export default {
                         backgroundColor: "#F5F5F5",
                         dark: {
                             image: "./sources/assets/images/splash-android-dark.png",
-                            backgroundColor: "#1e1e1e",
+                            backgroundColor: "#000000",
                         }
                     }
                 }
@@ -195,6 +230,8 @@ export default {
                 revenueCatStripeKey: process.env.EXPO_PUBLIC_REVENUE_CAT_STRIPE,
                 elevenLabsAgentId,
                 consoleLoggingDefault,
+                buildCommitSha: buildMetadata.commitSha,
+                buildCommitTimestamp: buildMetadata.commitTimestamp,
             }
         },
         owner: "bulkacorp"

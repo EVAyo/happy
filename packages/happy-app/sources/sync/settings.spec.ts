@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { settingsParse, applySettings, settingsDefaults, type Settings } from './settings';
+import { SettingsSchema, settingsParse, applySettings, settingsDefaults, settingsToSyncPayload, type Settings } from './settings';
 
 describe('settings', () => {
     describe('settingsParse', () => {
@@ -172,6 +172,11 @@ describe('settings', () => {
     });
 
     describe('settingsDefaults', () => {
+        it('documents the features controlled by experimental enrollment', () => {
+            expect(SettingsSchema.shape.experiments.description).toContain('Rig session file browser');
+            expect(SettingsSchema.shape.experiments.description).toContain('Usage settings page');
+        });
+
         it('should have correct default values', () => {
             expect(settingsDefaults).toEqual({
                 schemaVersion: 2,
@@ -185,15 +190,20 @@ describe('settings', () => {
                 inferenceOpenAIKey: null,
                 experiments: false,
                 alwaysShowContextSize: false,
-                avatarStyle: 'brutalist',
-                showFlavorIcons: false,
-
                 agentInputEnterToSend: true,
-                hideInactiveSessions: false,
-                expResumeSession: false,
+                avatarStyle: 'brutalist',
+                avatarMonochrome: false,
+                sessionListGrouping: 'flat',
+                showFlavorIcons: false,
+                showHarnessIconInSessionHeader: true,
+                userMessageBubbleColor: 'gray',
+                usageLimitShowRemaining: false,
+                hideInactiveSessions: true,
+                sortSessionsByActivity: true,
+                expResumeSession: true,
                 fileDiffsSidebar: false,
                 groupToolCalls: false,
-                expImageUpload: false,
+                compactToolCalls: false,
                 reviewPromptAnswered: false,
                 reviewPromptLikedApp: null,
                 voiceAssistantLanguage: null,
@@ -204,13 +214,51 @@ describe('settings', () => {
                 lastUsedAgent: null,
                 lastUsedPermissionMode: null,
                 lastUsedModelMode: null,
+                agentDefaultOverrides: {},
                 dismissedCLIWarnings: { perMachine: {}, global: {} },
+            });
+        });
+
+        it('keeps the legacy list setting while defaulting the header setting on', () => {
+            expect(settingsParse({ showFlavorIcons: true })).toMatchObject({
+                showFlavorIcons: true,
+                showHarnessIconInSessionHeader: true,
             });
         });
 
         it('should be a valid Settings object', () => {
             const parsed = settingsParse(settingsDefaults);
             expect(parsed).toEqual(settingsDefaults);
+        });
+    });
+
+    describe('settingsToSyncPayload', () => {
+        it('omits empty agent default overrides', () => {
+            expect(settingsToSyncPayload(settingsDefaults)).not.toHaveProperty('agentDefaultOverrides');
+        });
+
+        it('omits empty per-agent override objects', () => {
+            expect(settingsToSyncPayload({
+                ...settingsDefaults,
+                agentDefaultOverrides: {
+                    codex: {},
+                },
+            })).not.toHaveProperty('agentDefaultOverrides');
+        });
+
+        it('keeps user-selected agent default overrides', () => {
+            const settings = {
+                ...settingsDefaults,
+                agentDefaultOverrides: {
+                    codex: { modelMode: 'gpt-5.4' },
+                },
+            };
+
+            expect(settingsToSyncPayload(settings)).toMatchObject({
+                agentDefaultOverrides: {
+                    codex: { modelMode: 'gpt-5.4' },
+                },
+            });
         });
     });
 

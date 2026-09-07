@@ -13,10 +13,11 @@ import type { SandboxConfig } from "@/persistence"
 export type { PermissionMode } from "@/api/types"
 import type { PermissionMode } from "@/api/types"
 
-export type ClaudeEffort = 'low' | 'medium' | 'high' | 'max';
+export type ClaudeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface EnhancedMode {
-    permissionMode: PermissionMode;
+    /** Unset means "no override" — Claude uses its own configured mode. */
+    permissionMode?: PermissionMode;
     model?: string;
     fallbackModel?: string;
     customSystemPrompt?: string;
@@ -42,6 +43,7 @@ interface LoopOptions {
     allowedTools?: string[]
     sandboxConfig?: SandboxConfig
     onSessionReady?: (session: Session) => void
+    onAbort?: () => void
     /** Path to temporary settings file with SessionStart hook (required for session tracking) */
     hookSettingsPath: string
     /** JavaScript runtime to use for spawning Claude Code (default: 'node') */
@@ -65,6 +67,7 @@ export async function loop(opts: LoopOptions): Promise<number> {
         allowedTools: opts.allowedTools,
         sandboxConfig: opts.sandboxConfig,
         onModeChange: opts.onModeChange,
+        onAbort: opts.onAbort,
         hookSettingsPath: opts.hookSettingsPath,
         jsRuntime: opts.jsRuntime
     });
